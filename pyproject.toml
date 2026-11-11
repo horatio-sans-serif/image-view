@@ -1,0 +1,12 @@
+[project]
+name = "simple-image-viewer"
+version = "0.1.0"
+description = "Simple image viewer; a test of using Claude Code"
+readme = "README.md"
+requires-python = "~=3.12"
+dependencies = [
+    "gnupg>=2.3.1",
+    "pillow>=11.1.0",
+    "pyqt6>=6.8.0",
+    "python-gnupg>=0.5.4",
+]

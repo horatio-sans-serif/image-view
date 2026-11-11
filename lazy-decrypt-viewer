@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""
+Lazy decryption wrapper for simple-image-viewer.
+Only decrypts images when they are actually viewed.
+
+Usage: lazy-decrypt-viewer FILE.gpg [FILE2.gpg ...]
+"""
+import sys
+import os
+import tempfile
+import subprocess
+import threading
+import shutil
+from pathlib import Path
+
+
+def decrypt_to_fifo(gpg_path, encrypted_file, fifo_path):
+    """Decrypt a file and write to a FIFO (blocks until reader consumes)."""
+    try:
+        # Use gpg subprocess directly
+        result = subprocess.run(
+            [gpg_path, "--decrypt", encrypted_file],
+            capture_output=True,
+            check=True
+        )
+
+        # This write will block until the viewer reads from the FIFO
+        with open(fifo_path, "wb") as fifo:
+            fifo.write(result.stdout)
+
+        print(f"Decrypted {encrypted_file}", file=sys.stderr)
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to decrypt {encrypted_file}: {e.stderr.decode()}", file=sys.stderr)
+    except Exception as e:
+        print(f"Error decrypting {encrypted_file}: {e}", file=sys.stderr)
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: lazy-decrypt-viewer FILE.gpg [FILE2.gpg ...]")
+        sys.exit(1)
+
+    encrypted_files = sys.argv[1:]
+
+    # Find gpg binary
+    gpg_path = shutil.which("gpg")
+    if not gpg_path:
+        # Try common locations
+        for path in ["/opt/homebrew/bin/gpg", "/usr/local/bin/gpg", "/usr/bin/gpg"]:
+            if os.path.exists(path):
+                gpg_path = path
+                break
+
+    if not gpg_path:
+        print("Error: gpg binary not found", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Using gpg at: {gpg_path}", file=sys.stderr)
+
+    # Create temporary directory for FIFOs
+    with tempfile.TemporaryDirectory(prefix="lazy-decrypt-") as tmpdir:
+        fifo_paths = []
+        threads = []
+
+        # Create a FIFO for each encrypted file
+        for i, encrypted_file in enumerate(encrypted_files):
+            basename = os.path.basename(encrypted_file).replace(".gpg", "")
+            fifo_path = os.path.join(tmpdir, f"{i:03d}_{basename}")
+            os.mkfifo(fifo_path)
+            fifo_paths.append(fifo_path)
+
+            # Start a thread that will decrypt when the FIFO is read
+            thread = threading.Thread(
+                target=decrypt_to_fifo,
+                args=(gpg_path, encrypted_file, fifo_path),
+                daemon=True
+            )
+            thread.start()
+            threads.append(thread)
+
+        print(f"Created {len(fifo_paths)} FIFOs in {tmpdir}", file=sys.stderr)
+        print("Starting viewer...", file=sys.stderr)
+
+        # Launch the viewer with the FIFO paths
+        viewer_path = Path(__file__).parent / "main.py"
+        # --project pins dependency resolution to view/pyproject.toml regardless
+        # of the cwd this script was invoked from.
+        subprocess.run(
+            ["uv", "run", "--project", str(viewer_path.parent), str(viewer_path)]
+            + fifo_paths
+        )
+
+        print("Viewer closed", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()
